@@ -2,8 +2,6 @@
 #define DEBUG_H_
 
 #include <stdio.h>
-#include <stdint.h>
-#include <stdlib.h>
 
 #define eprintf(args...) fprintf (stderr, args)
 
