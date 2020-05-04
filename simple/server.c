@@ -39,10 +39,13 @@ void handle_client(int sockid) {
 			goto exit;
 		}
 #ifdef RATE
-		if (r != 0) {
-			rx += r;
-			rx_end_ts = micro_ts();
-		}
+	if (r == 0) {
+		TRACE_INFO("Connection closed from the other side, exiting\n");
+		goto exit;
+	}
+
+	rx += r;
+	rx_end_ts = micro_ts();
 #endif
 
 		TRACE_DEBUG("Received %d bytes from client\n", r);

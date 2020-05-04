@@ -103,12 +103,13 @@ sock_failed:
 int accept_conn() {
 	int ret;
 
-	TRACE_INFO("Awaiting a new connection\n");
+	TRACE_DEBUG("Waiting to accept a new client\n");
 	ret = accept(server_sock, NULL, NULL);
 	if (ret == -1) {
 		TRACE_ERROR("Could not accept new connection!\n");
 		goto return_failed;
 	}
+	TRACE_DEBUG("Accepted a new client\n");
 
 	if (add_to_epoll(EPOLLIN, ret) == FALSE) goto epoll_failed;
 
@@ -157,10 +158,13 @@ int read_event(int sockid) {
 		return FALSE;
 	}
 #ifdef RATE
-	if (ret != 0) {
-		rx += ret;
-		rx_end_ts = micro_ts();
+	if (ret == 0) {
+		TRACE_INFO("Connection closed from the other side, exiting\n");
+		return FALSE;
 	}
+
+	rx += ret;
+	rx_end_ts = micro_ts();
 #endif
 
 	TRACE_DEBUG("Received %d bytes from client\n", ret);
@@ -173,7 +177,7 @@ void handle_sigint(int sig)  {
 } 
 
 int main() {
-	int ret, fd;
+	int ret, fd, nb_ev;
   	struct epoll_event ev[BURST_SIZE];
 
 	signal(SIGINT, handle_sigint);
@@ -191,17 +195,20 @@ int main() {
   	epoll_fd = epoll_create(EPOLL_SIZE); 
 	if (epoll_fd == -1) {
 		TRACE_ERROR("Unable to create epoll, epoll: %s\n", strerror(errno));
+		goto failed_exit;
 	}
 	add_to_epoll(EPOLLIN, server_sock);
 
   	while (!force_quit) {
-		ret = epoll_wait(epoll_fd, ev, BURST_SIZE, -1);
+		TRACE_DEBUG("Wating for futher events...\n");
+		nb_ev = epoll_wait(epoll_fd, ev, BURST_SIZE, -1);
+		TRACE_DEBUG("Got %d events from epoll_wait\n", nb_ev);
 		
-		for (int i = 0; i < ret; i++) {
+		for (int i = 0; i < nb_ev; i++) {
 			fd = ev[i].data.fd;
+			TRACE_DEBUG("Processign %d event, Got an event againt fd: %d\n", i, fd);
 			if (fd == server_sock)  {
-				ret = accept_conn();
-				if (ret == FALSE) goto failed_exit;
+				accept_conn();
 				continue;
 			}
 			

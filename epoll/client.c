@@ -80,9 +80,15 @@ void handle_connection(int sockid) {
 			}
 		}
 #ifdef RATE
+		if (r == 0) {
+			TRACE_INFO("Connection closed from the other side, exiting\n");
+			goto exit;
+		}
+
 		rx += r;
 		rx_end_ts = micro_ts();
 #endif
+	break;
 	}
 exit:
 	close(sockid);
