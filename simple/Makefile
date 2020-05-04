@@ -13,6 +13,7 @@ OBJS+=$(_COMM_O)
 
 CC=gcc -g
 
+# Three different level of trace functions
 CFLAGS += -DERROR
 CFLAGS += -DINFO
 # CFLAGS += -DDEBUG
