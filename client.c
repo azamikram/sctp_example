@@ -33,13 +33,24 @@ void handle_connection(int sockid) {
 	uint8_t buffer[MAX_BUFF];
 	uint8_t *data = generate_msg(MAX_BUFF / 2);
 	size_t datalen = MAX_BUFF / 2;
+#ifdef RATE
+	micro_ts_t rx_start_ts, rx_end_ts;
+	rx_start_ts = rx_end_ts = 0;
+
+	micro_ts_t tx_start_ts, tx_end_ts;
+	tx_start_ts = tx_end_ts = 0;
+
 	size_t rx, tx;
 	rx = tx = 0;
+#endif
 
 	while (!force_quit) {
 		w = 0;
 		// Send the complete message.
 		while (w < datalen) {
+#ifdef RATE
+			if (tx == 0) tx_start_ts = micro_ts();
+#endif
 			w += SCTP_WRITE(sockid, data + w, datalen - w);
 			if (w < datalen) {
 				TRACE_INFO("Tried to read %ld bytes, read %d btyes\n", datalen, w);
@@ -48,13 +59,18 @@ void handle_connection(int sockid) {
 					goto exit;
 				}
 			}
-
+#ifdef RATE
 			tx += w;
+			tx_end_ts = micro_ts();
+#endif
 			if (force_quit) goto exit;
 		}
 
 		TRACE_DEBUG("Sent %d bytes and now trying to read %ld bytes\n", w, datalen);
 
+#ifdef RATE
+		if (rx == 0) rx_start_ts = micro_ts();
+#endif
 		r = SCTP_READ(sockid, buffer, datalen);
 		if (r < datalen) {
 			TRACE_INFO("Tried to read %ld bytes, read %d\n", datalen, r);
@@ -63,11 +79,24 @@ void handle_connection(int sockid) {
 				goto exit;
 			}
 		}
+#ifdef RATE
 		rx += r;
+		rx_end_ts = micro_ts();
+#endif
 	}
 exit:
 	close(sockid);
+#ifdef RATE
+	double rx_elapsed = MICRO_TO_SEC(rx_end_ts - rx_start_ts);
+	double tx_elapsed = MICRO_TO_SEC(tx_end_ts - tx_start_ts);
+
+	TRACE_INFO("The total time it took for rx: %0.4f sec\n", rx_elapsed);
+	TRACE_INFO("The total time it took for rx: %0.4f sec\n", tx_elapsed);
 	TRACE_INFO("Received %ld bytes and sent %ld bytes\n", rx, tx);
+	TRACE_INFO("RX rate: %0.4fGbps | TX rate: %0.4fGbps\n",
+				BYTES_TO_BITS(BYTES_TO_GB(rx)) / rx_elapsed,
+				BYTES_TO_BITS(BYTES_TO_GB(tx)) / tx_elapsed);
+#endif
 }
 
 void handle_sigint(int sig)  {

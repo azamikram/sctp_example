@@ -18,21 +18,40 @@ int force_quit = 0;
 void handle_client(int sockid) {
 	int r, w;
 	uint8_t buffer[MAX_BUFF];
+#ifdef RATE
+	micro_ts_t rx_start_ts, rx_end_ts;
+	rx_start_ts = rx_end_ts = 0;
+
+	micro_ts_t tx_start_ts, tx_end_ts;
+	tx_start_ts = tx_end_ts = 0;
+
 	size_t rx, tx;
 	rx = tx = 0;
+#endif
 
 	while (!force_quit) {
+#ifdef RATE
+		if (rx == 0) rx_start_ts = micro_ts();
+#endif
 		r = SCTP_READ(sockid, buffer, MAX_BUFF);
 		if (r == -1) {
 			TRACE_ERROR("An error occured while reading from client\n");
 			goto exit;
 		}
-		rx += r;
+#ifdef RATE
+		if (r != 0) {
+			rx += r;
+			rx_end_ts = micro_ts();
+		}
+#endif
 
 		TRACE_DEBUG("Received %d bytes from client\n", r);
 		
 		w = 0;
 		while (w < r) {
+#ifdef RATE
+			if (tx == 0) tx_start_ts = micro_ts();
+#endif
 			w += SCTP_WRITE(sockid, buffer + w, r - w);
 			if (w < r) {
 				TRACE_ERROR("Tried to send %d bytes but only sent %d btyes", r, w);
@@ -42,13 +61,26 @@ void handle_client(int sockid) {
 				}
 			}
 
+#ifdef RATE
 			tx += w;
+			tx_end_ts = micro_ts();
+#endif
 			if (force_quit) goto exit;
 		}
 	}
 exit:
 	close(sockid);
+#ifdef RATE
+	double rx_elapsed = MICRO_TO_SEC(rx_end_ts - rx_start_ts);
+	double tx_elapsed = MICRO_TO_SEC(tx_end_ts - tx_start_ts);
+
+	TRACE_INFO("The total time it took for rx: %0.4f sec\n", rx_elapsed);
+	TRACE_INFO("The total time it took for rx: %0.4f sec\n", tx_elapsed);
 	TRACE_INFO("Received %ld bytes and sent %ld bytes\n", rx, tx);
+	TRACE_INFO("RX rate: %0.4fGbps | TX rate: %0.4fGbps\n",
+				BYTES_TO_BITS(BYTES_TO_GB(rx)) / rx_elapsed,
+				BYTES_TO_BITS(BYTES_TO_GB(tx)) / tx_elapsed);
+#endif
 }
 
 void handle_sigint(int sig)  {

@@ -2,15 +2,23 @@ MKDIR_P = mkdir -p
 
 BUILD_DIR=build
 SRCS=server.c client.c
+COMM=common.c
 INC=debug.h common.h
+BIN=server client
 LIBS=-lsctp
 
+_COMM_O=$(addprefix $(BUILD_DIR)/, $(COMM:.c=.o))
 OBJS=$(addprefix $(BUILD_DIR)/, $(SRCS:.c=.o))
+OBJS+=$(_COMM_O)
+
 CC=gcc -g
 
 CFLAGS += -DERROR
 CFLAGS += -DINFO
 # CFLAGS += -DDEBUG
+
+# Use the following flag to do rate calculation
+CFLAGS += -DRATE
 
 CFLAGS += -O3
 CFLAGS += -Wall
@@ -25,7 +33,7 @@ else
 	export HIDE=
 endif
 
-all: $(BUILD_DIR)
+all: $(BUILD_DIR) $(BIN)
 
 $(BUILD_DIR):
 	$(MSG) "   MKDIR $@"
@@ -35,9 +43,9 @@ $(OBJS): $(BUILD_DIR)/%.o: %.c $(INC)
 	$(MSG) "   CC $<"
 	$(HIDE) $(CC) -c $< $(CFLAGS) -o $@
 
-%: $(BUILD_DIR) $(BUILD_DIR)/%.o
+%: $(BUILD_DIR) $(BUILD_DIR)/%.o $(_COMM_O)
 	$(MSG) "   LD $(BUILD_DIR)/$@.o"
-	$(HIDE) $(CC) $(BUILD_DIR)/$@.o $(LIBS) -o $(BUILD_DIR)/$@
+	$(HIDE) $(CC) $(BUILD_DIR)/$@.o $(COMM) $(LIBS) -o $(BUILD_DIR)/$@
 
 clean:
 	$(MSG) "   CLEAN $(BUILD_DIR)"
