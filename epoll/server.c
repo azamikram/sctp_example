@@ -1,4 +1,6 @@
+#include <sys/epoll.h>
 #include <stdlib.h>
+#include <errno.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/socket.h>
@@ -10,16 +12,47 @@
 #include "debug.h"
 #include "common.h"
 
-#define MAX_BUFF 1024
-#define PORT 8877
+#define EPOLL_SIZE (1024)
+#define BURST_SIZE (32)
+#define MAX_BUFF (1024)
+#define PORT (8877)
 
-int server_sock;
+int server_sock = -1;
+int epoll_fd = -1;
 int force_quit = FALSE;
 #ifdef RATE
 micro_ts_t rx_start_ts, rx_end_ts;
 micro_ts_t tx_start_ts, tx_end_ts;
 size_t rx, tx;
 #endif
+
+int add_to_epoll(int events, int fd) {
+  int ret;
+  struct epoll_event ev;
+
+  ev.events = events;
+  ev.data.fd= fd;
+
+  TRACE_INFO("Adding fd %d to epoll\n", fd);
+  ret = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &ev);
+  if (ret == -1) {
+    TRACE_ERROR("Unable to add fd to epoll, epoll_ctl: %s\n", strerror(errno));
+	return FALSE;
+  }
+  return TRUE;
+}
+
+int rm_from_epoll(int fd) {
+  int ret;
+  struct epoll_event ev;
+
+  ret = epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, &ev);
+  if (ret == -1) {
+    TRACE_ERROR("Unable to remove fd from epoll, epoll_ctl: %s\n", strerror(errno));
+	return FALSE;
+  }
+  return TRUE;
+}
 
 int setup_listener() {
 	int ret;
@@ -58,8 +91,7 @@ int setup_listener() {
 		TRACE_ERROR("Unable to listen on the server socket\n");
 		goto failed_return;
 	}
-	
-	TRACE_INFO("Returing from handl_client\n");
+	TRACE_INFO("Returing from setup_listener\n");
 	return TRUE;
 
 failed_return:
@@ -75,9 +107,18 @@ int accept_conn() {
 	ret = accept(server_sock, NULL, NULL);
 	if (ret == -1) {
 		TRACE_ERROR("Could not accept new connection!\n");
-		return FALSE;
+		goto return_failed;
 	}
+
+	if (add_to_epoll(EPOLLIN, ret) == FALSE) goto epoll_failed;
+
+	TRACE_INFO("Accepted new client\n");
 	return ret;
+
+epoll_failed:
+	close(ret);
+return_failed:
+	return FALSE;
 }
 
 int handle_write(int sockid, uint8_t *buffer, size_t len) {
@@ -103,7 +144,7 @@ int handle_write(int sockid, uint8_t *buffer, size_t len) {
 	return TRUE;
 }
 
-int handle_read(int sockid) {
+int read_event(int sockid) {
 	int ret;
 	uint8_t buffer[MAX_BUFF];
 
@@ -126,24 +167,16 @@ int handle_read(int sockid) {
 	return handle_write(sockid, buffer, ret);
 }
 
-void handle_client(int sockid) {
-	while (!force_quit) {
-		if (handle_read(sockid) == FALSE) break;
-	}
-
-	close(sockid);
-}
-
 void handle_sigint(int sig)  {
 	printf("Caught signal %d, going to quit!\n", sig);
 	force_quit = TRUE;
 } 
 
 int main() {
-	int ret;
-	signal(SIGINT, handle_sigint);
+	int ret, fd;
+  	struct epoll_event ev[BURST_SIZE];
 
-	TRACE_INFO("TRUE: %d | FALSE: %d | FALSE: %d\n", TRUE, FALSE, FALSE);
+	signal(SIGINT, handle_sigint);
 
 #ifdef RATE
 	rx_start_ts = rx_end_ts = 0;
@@ -152,15 +185,37 @@ int main() {
 #endif
 
 	ret = setup_listener();
-	TRACE_INFO("Ret listener %d | FALSE: %d\n", ret, FALSE);
 	if (ret == FALSE) goto listener_failed;
 	TRACE_INFO("Listening on the server socket!\n");
 
-	ret = accept_conn();
-	if (ret == FALSE) goto failed_exit;
-	TRACE_INFO("Accepted new client\n");
+  	epoll_fd = epoll_create(EPOLL_SIZE); 
+	if (epoll_fd == -1) {
+		TRACE_ERROR("Unable to create epoll, epoll: %s\n", strerror(errno));
+	}
+	add_to_epoll(EPOLLIN, server_sock);
 
-	handle_client(ret);
+  	while (!force_quit) {
+		ret = epoll_wait(epoll_fd, ev, BURST_SIZE, -1);
+		
+		for (int i = 0; i < ret; i++) {
+			fd = ev[i].data.fd;
+			if (fd == server_sock)  {
+				ret = accept_conn();
+				if (ret == FALSE) goto failed_exit;
+				continue;
+			}
+			
+			if (ev[i].events & EPOLLIN) {
+				if (read_event(fd) == FALSE) {
+					rm_from_epoll(fd);
+					close(fd);
+				}
+			}
+		}
+	}
+
+	close(server_sock);
+	close(epoll_fd);
 
 #ifdef RATE
 	double rx_elapsed = MICRO_TO_SEC(rx_end_ts - rx_start_ts);
@@ -173,7 +228,6 @@ int main() {
 				BYTES_TO_BITS(BYTES_TO_GB(rx)) / rx_elapsed,
 				BYTES_TO_BITS(BYTES_TO_GB(tx)) / tx_elapsed);
 #endif
-	close(server_sock);
 	exit(EXIT_SUCCESS);
 
 failed_exit:
