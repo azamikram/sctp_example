@@ -7,13 +7,26 @@
 #include <netinet/in.h>
 #include <netinet/sctp.h>
 #include <signal.h>
+#include <pthread.h>
 
 #include "debug.h"
 #include "common.h"
 
+#define DEAFULT_CLIENTS 5
+#define MAX_CPUS 14
+
 #define DST_ADDR "127.0.0.1"
 #define PORT 8877
+
 #define MAX_BUFF 1024
+
+typedef struct client_stats {
+	size_t rx;
+	size_t tx;
+
+	double rx_rate;
+	double tx_rate;
+} client_stats_t;
 
 int force_quit = 0;
 
@@ -57,7 +70,7 @@ socket_failed:
 	return FALSE;
 }
 
-void handle_connection(int sockid) {
+void handle_connection(int sockid, client_stats_t *stats) {
 	int r, w, ret;
 	uint8_t buffer[MAX_BUFF];
 	uint8_t *data = generate_msg(MAX_BUFF / 2);
@@ -70,8 +83,7 @@ void handle_connection(int sockid) {
 	micro_ts_t tx_start_ts, tx_end_ts;
 	tx_start_ts = tx_end_ts = 0;
 
-	size_t rx, tx;
-	rx = tx = 0;
+	stats->rx = stats->tx = 0;
 #endif
 
 	while (!force_quit) {
@@ -80,7 +92,7 @@ void handle_connection(int sockid) {
 		// Send the complete message
 		while (w < datalen) {
 #ifdef RATE
-			if (tx == 0) tx_start_ts = micro_ts();
+			if (stats->tx == 0) tx_start_ts = micro_ts();
 #endif
 			ret = SCTP_WRITE(sockid, data + w, bytes_to_send);
 			if (ret == -1) {
@@ -91,7 +103,7 @@ void handle_connection(int sockid) {
 			w += ret;
 			bytes_to_send -= w;
 #ifdef RATE
-			tx += w;
+			stats->tx += w;
 			tx_end_ts = micro_ts();
 #endif
 			if (force_quit) goto exit;
@@ -100,7 +112,7 @@ void handle_connection(int sockid) {
 		TRACE_DEBUG("Sent %d bytes and now trying to read %ld bytes\n", w, datalen);
 
 #ifdef RATE
-		if (rx == 0) rx_start_ts = micro_ts();
+		if (stats->rx == 0) rx_start_ts = micro_ts();
 #endif
 		r = SCTP_READ(sockid, buffer, datalen);
 		if (r == -1) {
@@ -113,7 +125,7 @@ void handle_connection(int sockid) {
 			goto exit;
 		}
 
-		rx += r;
+		stats->rx += r;
 		rx_end_ts = micro_ts();
 #endif
 	}
@@ -122,30 +134,89 @@ exit:
 #ifdef RATE
 	double rx_elapsed = MICRO_TO_SEC(rx_end_ts - rx_start_ts);
 	double tx_elapsed = MICRO_TO_SEC(tx_end_ts - tx_start_ts);
+	stats->rx_rate = BYTES_TO_BITS(BYTES_TO_GB(stats->rx)) / rx_elapsed;
+	stats->tx_rate = BYTES_TO_BITS(BYTES_TO_GB(stats->tx)) / tx_elapsed;
 
+#if 0
 	TRACE_INFO("The total time it took for rx: %0.4f sec\n", rx_elapsed);
 	TRACE_INFO("The total time it took for rx: %0.4f sec\n", tx_elapsed);
-	TRACE_INFO("Received %ld bytes and sent %ld bytes\n", rx, tx);
+	TRACE_INFO("Received %ld bytes and sent %ld bytes\n", stats->rx, stats->tx);
 	TRACE_INFO("RX rate: %0.4fGbps | TX rate: %0.4fGbps\n",
-				BYTES_TO_BITS(BYTES_TO_GB(rx)) / rx_elapsed,
-				BYTES_TO_BITS(BYTES_TO_GB(tx)) / tx_elapsed);
+				stats->rx_rate, stats->tx_rate);
 #endif
+#endif
+}
+
+void* run_client(void *arg) {
+	int sockid;
+	client_stats_t *stats = (client_stats_t *)arg;
+
+	sockid = create_connection();
+	if (sockid == FALSE) return NULL;
+	handle_connection(sockid, stats);
+	close(sockid);
+	return NULL;
 }
 
 void handle_sigint(int sig)  {
 	printf("Caught signal %d, going to quit!\n", sig);
 	force_quit = 1;
-} 
+}
+
+void usage(char *prog) {
+  fprintf(stderr,
+  				"usage: %s \n"
+  				"	-n Number of clients, default is %d and maximum is %d\n"
+				"	-h This help text\n",
+				prog, DEAFULT_CLIENTS, MAX_CPUS);
+  exit(EXIT_FAILURE);
+}
 
 int main(int argc, char *argv[]) {
-	int sockid;
+	int opt, n;
+	pthread_t threads[MAX_CPUS];
+	client_stats_t stats[MAX_CPUS];
 
-	signal(SIGINT, handle_sigint); 
+	n = DEAFULT_CLIENTS;
+	while ((opt = getopt(argc, argv, "n:h")) != -1) {
+		switch(opt) {
+			case 'n':
+				n = atoi(optarg);
+				if (n < 0 || n > MAX_CPUS) usage(argv[0]);
+				break;
+			case 'h':
+			default:
+				usage(argv[0]);
+				break;
+		}
+	}
 
-	sockid = create_connection();
-	if (sockid == FALSE) exit(EXIT_FAILURE);
-	handle_connection(sockid);
-	close(sockid);
+	signal(SIGINT, handle_sigint);
+
+	for (int i = 0; i < n; i++) {
+		pthread_create(threads + i, NULL, run_client, (void *)(stats + i));
+	}
+
+	for (int i = 0; i < n; i++) {
+		pthread_join(threads[i], NULL);
+	}
+
+#ifdef RATE
+	size_t rx, tx;
+	double rx_rate, tx_rate;
+	rx = tx = 0;
+	rx_rate = tx_rate = 0;
+
+	for (int i = 0; i < n; i++) {
+		rx += stats[i].rx;
+		tx += stats[i].tx;
+		rx_rate += stats[i].rx_rate;
+		tx_rate += stats[i].tx_rate;
+	}
+	TRACE_INFO("In summary:\n");
+	TRACE_INFO("Received %ld bytes and sent %ld bytes\n", rx, tx);
+	TRACE_INFO("RX rate: %0.4fGbps | TX rate: %0.4fGbps\n", rx_rate, tx_rate);
+#endif
 
 	exit(EXIT_SUCCESS);
 }

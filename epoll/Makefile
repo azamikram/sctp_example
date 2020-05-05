@@ -5,7 +5,7 @@ SRCS=server.c client.c
 COMM=common.c
 INC=debug.h common.h
 BIN=server client
-LIBS=-lsctp
+LIBS=-lsctp -lpthread
 
 _COMM_O=$(addprefix $(BUILD_DIR)/, $(COMM:.c=.o))
 OBJS=$(addprefix $(BUILD_DIR)/, $(SRCS:.c=.o))
