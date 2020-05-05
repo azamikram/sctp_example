@@ -16,7 +16,7 @@
 int force_quit = 0;
 
 void handle_client(int sockid) {
-	int r, w;
+	int r, w, ret;
 	uint8_t buffer[MAX_BUFF];
 #ifdef RATE
 	micro_ts_t rx_start_ts, rx_end_ts;
@@ -55,15 +55,12 @@ void handle_client(int sockid) {
 #ifdef RATE
 			if (tx == 0) tx_start_ts = micro_ts();
 #endif
-			w += SCTP_WRITE(sockid, buffer + w, r - w);
-			if (w < r) {
-				TRACE_ERROR("Tried to send %d bytes but only sent %d btyes", r, w);
-				if (w == -1) {
-					TRACE_INFO("Closing client connection because sctp_sendmsg returned -1");
-					goto exit;
-				}
+			ret = SCTP_WRITE(sockid, buffer + w, r - w);
+			if (ret == -1) {
+				TRACE_INFO("Closing client connection because SCTP_WRITE returned -1");
+				goto exit;
 			}
-
+			w += ret;
 #ifdef RATE
 			tx += w;
 			tx_end_ts = micro_ts();

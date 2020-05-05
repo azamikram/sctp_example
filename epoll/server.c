@@ -123,19 +123,17 @@ return_failed:
 }
 
 int handle_write(int sockid, uint8_t *buffer, size_t len) {
-	int w = 0;
+	int ret, w = 0;
 	while (w < len) {
 #ifdef RATE
 		if (tx == 0) tx_start_ts = micro_ts();
 #endif
-		w += SCTP_WRITE(sockid, buffer + w, len - w);
-		if (w < len) {
-			TRACE_ERROR("Tried to send %ld bytes but only sent %d btyes", len, w);
-			if (w == -1) {
-				TRACE_INFO("Closing client connection because sctp_sendmsg returned -1");
-				return FALSE;
-			}
+		ret = SCTP_WRITE(sockid, buffer + w, len - w);
+		if (ret == -1) {
+			TRACE_INFO("Closing client connection because SCTP_WRITE returned -1");
+			return FALSE;
 		}
+		w += ret;
 #ifdef RATE
 		tx += w;
 		tx_end_ts = micro_ts();

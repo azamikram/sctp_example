@@ -28,11 +28,41 @@ uint8_t* generate_msg(size_t len) {
 	return msg;
 }
 
+int create_connection() {
+	int sockid, ret;
+	struct sockaddr_in servaddr;
+
+	sockid = socket(AF_INET, SOCK_STREAM, IPPROTO_SCTP);
+	if (sockid == -1) {
+		TRACE_ERROR("Failed to create server socket\n");
+		goto socket_failed;
+	}
+
+	bzero((void *)&servaddr, sizeof(servaddr));
+	servaddr.sin_family = AF_INET;
+	servaddr.sin_port = htons(PORT);
+	servaddr.sin_addr.s_addr = inet_addr(DST_ADDR);
+
+	ret = connect(sockid, (struct sockaddr *)&servaddr, sizeof(servaddr));
+	if (ret == -1) {
+		TRACE_ERROR("Unable to connect to the server\n");
+		goto failed_exit;
+	}
+	TRACE_INFO("Connected with the server, sockid: %d\n", sockid);
+	return sockid;
+
+failed_exit:
+	close(sockid);
+socket_failed:
+	return FALSE;
+}
+
 void handle_connection(int sockid) {
-	int r, w;
+	int r, w, ret;
 	uint8_t buffer[MAX_BUFF];
 	uint8_t *data = generate_msg(MAX_BUFF / 2);
 	size_t datalen = MAX_BUFF / 2;
+	size_t bytes_to_send;
 #ifdef RATE
 	micro_ts_t rx_start_ts, rx_end_ts;
 	rx_start_ts = rx_end_ts = 0;
@@ -46,19 +76,20 @@ void handle_connection(int sockid) {
 
 	while (!force_quit) {
 		w = 0;
-		// Send the complete message.
+		bytes_to_send = datalen;
+		// Send the complete message
 		while (w < datalen) {
 #ifdef RATE
 			if (tx == 0) tx_start_ts = micro_ts();
 #endif
-			w += SCTP_WRITE(sockid, data + w, datalen - w);
-			if (w < datalen) {
-				TRACE_INFO("Tried to read %ld bytes, read %d btyes\n", datalen, w);
-				if (w == -1) {
-					TRACE_ERROR("An error occured while reading from server\n");
-					goto exit;
-				}
+			ret = SCTP_WRITE(sockid, data + w, bytes_to_send);
+			if (ret == -1) {
+				TRACE_ERROR("An error occured while writing to server\n");
+				goto exit;
 			}
+
+			w += ret;
+			bytes_to_send -= w;
 #ifdef RATE
 			tx += w;
 			tx_end_ts = micro_ts();
@@ -72,12 +103,9 @@ void handle_connection(int sockid) {
 		if (rx == 0) rx_start_ts = micro_ts();
 #endif
 		r = SCTP_READ(sockid, buffer, datalen);
-		if (r < datalen) {
-			TRACE_INFO("Tried to read %ld bytes, read %d\n", datalen, r);
-			if (r == -1) {
-				TRACE_ERROR("An error occured while writing to server\n");
-				goto exit;
-			}
+		if (r == -1) {
+			TRACE_ERROR("An error occured while reading from server\n");
+			goto exit;
 		}
 #ifdef RATE
 		if (r == 0) {
@@ -88,7 +116,6 @@ void handle_connection(int sockid) {
 		rx += r;
 		rx_end_ts = micro_ts();
 #endif
-	break;
 	}
 exit:
 	close(sockid);
@@ -111,35 +138,14 @@ void handle_sigint(int sig)  {
 } 
 
 int main(int argc, char *argv[]) {
-	int sockid, ret;
-	struct sockaddr_in servaddr;
+	int sockid;
 
 	signal(SIGINT, handle_sigint); 
 
-	sockid = socket(AF_INET, SOCK_STREAM, IPPROTO_SCTP);
-	if (sockid == -1) {
-		TRACE_ERROR("Failed to create server socket\n");
-		goto socket_failed;
-	}
-
-	bzero((void *)&servaddr, sizeof(servaddr));
-	servaddr.sin_family = AF_INET;
-	servaddr.sin_port = htons(PORT);
-	servaddr.sin_addr.s_addr = inet_addr(DST_ADDR);
-
-	ret = connect(sockid, (struct sockaddr *)&servaddr, sizeof(servaddr));
-	if (ret == -1) {
-		TRACE_ERROR("Unable to connect to the server\n");
-		goto failed_exit;
-	}
-	TRACE_INFO("Connected with the server, sockid: %d\n", sockid);
-
+	sockid = create_connection();
+	if (sockid == FALSE) exit(EXIT_FAILURE);
 	handle_connection(sockid);
 	close(sockid);
-	exit(EXIT_SUCCESS);
 
-failed_exit:
-	close(sockid);
-socket_failed:
-	exit(EXIT_FAILURE);
+	exit(EXIT_SUCCESS);
 }
