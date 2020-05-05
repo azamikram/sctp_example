@@ -15,6 +15,7 @@
 #define EPOLL_SIZE (1024)
 #define BURST_SIZE (32)
 #define MAX_BUFF (1024)
+#define BACKLOG (100)
 #define PORT (8877)
 
 int server_sock = -1;
@@ -86,7 +87,7 @@ int setup_listener() {
 		goto failed_return;
 	}
 
-	ret = listen(server_sock, 5);
+	ret = listen(server_sock, BACKLOG);
 	if (ret == -1) {
 		TRACE_ERROR("Unable to listen on the server socket\n");
 		goto failed_return;
@@ -113,7 +114,7 @@ int accept_conn() {
 
 	if (add_to_epoll(EPOLLIN, ret) == FALSE) goto epoll_failed;
 
-	TRACE_INFO("Accepted new client\n");
+	TRACE_INFO("Added the new connection to epoll\n");
 	return ret;
 
 epoll_failed:

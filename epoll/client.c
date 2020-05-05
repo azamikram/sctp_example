@@ -8,17 +8,18 @@
 #include <netinet/sctp.h>
 #include <signal.h>
 #include <pthread.h>
+#include <errno.h>
 
 #include "debug.h"
 #include "common.h"
 
-#define DEAFULT_CLIENTS 5
-#define MAX_CPUS 14
+#define DEAFULT_CLIENTS (5)
+#define MAX_CPUS (100)
 
 #define DST_ADDR "127.0.0.1"
-#define PORT 8877
+#define PORT (8877)
 
-#define MAX_BUFF 1024
+#define MAX_BUFF (1024)
 
 typedef struct client_stats {
 	size_t rx;
@@ -58,7 +59,7 @@ int create_connection() {
 
 	ret = connect(sockid, (struct sockaddr *)&servaddr, sizeof(servaddr));
 	if (ret == -1) {
-		TRACE_ERROR("Unable to connect to the server\n");
+		TRACE_ERROR("Unable to connect to the server, error: %s\n", strerror(errno));
 		goto failed_exit;
 	}
 	TRACE_INFO("Connected with the server, sockid: %d\n", sockid);
@@ -82,8 +83,6 @@ void handle_connection(int sockid, client_stats_t *stats) {
 
 	micro_ts_t tx_start_ts, tx_end_ts;
 	tx_start_ts = tx_end_ts = 0;
-
-	stats->rx = stats->tx = 0;
 #endif
 
 	while (!force_quit) {
@@ -150,11 +149,14 @@ exit:
 void* run_client(void *arg) {
 	int sockid;
 	client_stats_t *stats = (client_stats_t *)arg;
+	stats->rx = stats->tx = 0;
+	stats->rx_rate = stats->tx_rate = 0;
 
 	sockid = create_connection();
 	if (sockid == FALSE) return NULL;
 	handle_connection(sockid, stats);
 	close(sockid);
+
 	return NULL;
 }
 
