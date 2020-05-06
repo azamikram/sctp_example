@@ -9,6 +9,7 @@
 #include <signal.h>
 #include <pthread.h>
 #include <errno.h>
+#include <fcntl.h>
 
 #include "debug.h"
 #include "common.h"
@@ -16,7 +17,7 @@
 #define DEAFULT_CLIENTS (5)
 #define MAX_CPUS (100)
 
-#define DST_ADDR "127.0.0.1"
+#define DST_ADDR "192.168.0.10"
 #define PORT (8877)
 
 #define MAX_BUFF (1024)
@@ -43,7 +44,7 @@ uint8_t* generate_msg(size_t len) {
 }
 
 int create_connection() {
-	int sockid, ret;
+	int sockid, ret, flags;
 	struct sockaddr_in servaddr;
 
 	sockid = socket(AF_INET, SOCK_STREAM, IPPROTO_SCTP);
@@ -63,6 +64,14 @@ int create_connection() {
 		goto failed_exit;
 	}
 	TRACE_INFO("Connected with the server, sockid: %d\n", sockid);
+
+	flags = fcntl(sockid, F_GETFL, 0);
+	ret = fcntl(sockid, F_SETFL, flags | O_NONBLOCK);
+	if (ret == -1) {
+		TRACE_ERROR("Unable to set socket as nonblocking, error: %s\n", strerror(errno));
+		goto failed_exit;
+	}
+
 	return sockid;
 
 failed_exit:
@@ -94,10 +103,12 @@ void handle_connection(int sockid, client_stats_t *stats) {
 			if (stats->tx == 0) tx_start_ts = micro_ts();
 #endif
 			ret = SCTP_WRITE(sockid, data + w, bytes_to_send);
-			if (ret == -1) {
-				TRACE_ERROR("An error occured while writing to server\n");
+			if (ret < 0 && errno != EAGAIN) {
+				TRACE_ERROR("An error occur red while writing to server\n");
 				goto exit;
 			}
+			if (force_quit) goto exit;
+			if (ret == -1) continue;
 
 			w += ret;
 			bytes_to_send -= w;
@@ -105,7 +116,6 @@ void handle_connection(int sockid, client_stats_t *stats) {
 			stats->tx += w;
 			tx_end_ts = micro_ts();
 #endif
-			if (force_quit) goto exit;
 		}
 
 		TRACE_DEBUG("Sent %d bytes and now trying to read %ld bytes\n", w, datalen);
@@ -114,16 +124,17 @@ void handle_connection(int sockid, client_stats_t *stats) {
 		if (stats->rx == 0) rx_start_ts = micro_ts();
 #endif
 		r = SCTP_READ(sockid, buffer, datalen);
-		if (r == -1) {
-			TRACE_ERROR("An error occured while reading from server\n");
-			goto exit;
+		if (r <= 0) {
+			if (ret == 0) {
+				TRACE_ERROR("The connection closed from the server side, exiting\n");
+				goto exit;
+			} else if (errno != EAGAIN) {
+				TRACE_ERROR("An error occured while reading from server\n");
+				goto exit;
+			}
 		}
 #ifdef RATE
-		if (r == 0) {
-			TRACE_INFO("Connection closed from the other side, exiting\n");
-			goto exit;
-		}
-
+		if (r == -1) continue;
 		stats->rx += r;
 		rx_end_ts = micro_ts();
 #endif
@@ -154,6 +165,7 @@ void* run_client(void *arg) {
 
 	sockid = create_connection();
 	if (sockid == FALSE) return NULL;
+
 	handle_connection(sockid, stats);
 	close(sockid);
 
