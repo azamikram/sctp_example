@@ -8,6 +8,7 @@
 #include <netinet/in.h>
 #include <netinet/sctp.h>
 #include <signal.h>
+#include <fcntl.h>
 
 #include "debug.h"
 #include "common.h"
@@ -32,7 +33,7 @@ int add_to_epoll(int events, int fd) {
   struct epoll_event ev;
 
   ev.events = events;
-  ev.data.fd= fd;
+  ev.data.fd = fd;
 
   TRACE_INFO("Adding fd %d to epoll\n", fd);
   ret = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, fd, &ev);
@@ -56,7 +57,7 @@ int rm_from_epoll(int fd) {
 }
 
 int setup_listener() {
-	int ret;
+	int ret, flags;
 	struct sockaddr_in servaddr;
 	struct sctp_initmsg initmsg;
 
@@ -87,6 +88,13 @@ int setup_listener() {
 		goto failed_return;
 	}
 
+	flags = fcntl(server_sock, F_GETFL, 0);
+	ret = fcntl(server_sock, F_SETFL, flags | O_NONBLOCK);
+	if (ret == -1) {
+		TRACE_ERROR("Unable to set server socket as nonblocking, error: %s\n", strerror(errno));
+		goto failed_return;
+	}
+
 	ret = listen(server_sock, BACKLOG);
 	if (ret == -1) {
 		TRACE_ERROR("Unable to listen on the server socket\n");
@@ -102,23 +110,31 @@ sock_failed:
 }
 
 int accept_conn() {
-	int ret;
+	int ret, flags, sockid;
 
 	TRACE_DEBUG("Waiting to accept a new client\n");
-	ret = accept(server_sock, NULL, NULL);
-	if (ret == -1) {
+	sockid = accept(server_sock, NULL, NULL);
+	if (sockid == -1) {
 		TRACE_ERROR("Could not accept new connection!\n");
 		goto return_failed;
 	}
 	TRACE_DEBUG("Accepted a new client\n");
 
-	if (add_to_epoll(EPOLLIN, ret) == FALSE) goto epoll_failed;
+	if (add_to_epoll(EPOLLIN, sockid) == FALSE) goto epoll_failed;
+
+	flags = fcntl(sockid, F_GETFL, 0);
+	ret = fcntl(sockid, F_SETFL, flags | O_NONBLOCK);
+	if (ret == -1) {
+		TRACE_ERROR("Unable to set server socket as nonblocking, error: %s\n", strerror(errno));
+		goto failed_nonblocking;
+	}
 
 	TRACE_INFO("Added the new connection to epoll\n");
-	return ret;
+	return TRUE;
 
+failed_nonblocking:
 epoll_failed:
-	close(ret);
+	close(sockid);
 return_failed:
 	return FALSE;
 }
@@ -130,44 +146,48 @@ int handle_write(int sockid, uint8_t *buffer, size_t len) {
 		if (tx == 0) tx_start_ts = micro_ts();
 #endif
 		ret = SCTP_WRITE(sockid, buffer + w, len - w);
-		if (ret == -1) {
-			TRACE_INFO("Closing client connection because SCTP_WRITE returned -1");
+		if (ret < 0 && errno != EAGAIN) {
+			TRACE_ERROR("An error occur red while writing to server\n");
 			return FALSE;
 		}
+
+		if (force_quit) return FALSE;
+		if (ret == -1) continue;
+
 		w += ret;
 #ifdef RATE
 		tx += w;
 		tx_end_ts = micro_ts();
 #endif
-		if (force_quit) return FALSE;
 	}
 	return TRUE;
 }
 
 int read_event(int sockid) {
-	int ret;
+	int r;
 	uint8_t buffer[MAX_BUFF];
 
 #ifdef RATE
 	if (rx == 0) rx_start_ts = micro_ts();
 #endif
-	ret = SCTP_READ(sockid, buffer, MAX_BUFF);
-	if (ret == -1) {
-		TRACE_ERROR("An error occured while reading from client\n");
-		return FALSE;
+	r = SCTP_READ(sockid, buffer, MAX_BUFF);
+	if (r <= 0) {
+		if (r == 0) {
+			TRACE_ERROR("The connection closed from the client side, exiting\n");
+			return FALSE;
+		} else if (errno != EAGAIN) {
+			TRACE_ERROR("An error occured while reading from server\n");
+			return FALSE;
+		}
 	}
 #ifdef RATE
-	if (ret == 0) {
-		TRACE_INFO("Connection closed from the other side, exiting\n");
-		return FALSE;
-	}
-
-	rx += ret;
+	if (r == -1) return TRUE;
+	rx += r;
 	rx_end_ts = micro_ts();
 #endif
 
-	TRACE_DEBUG("Received %d bytes from client\n", ret);
-	return handle_write(sockid, buffer, ret);
+	TRACE_DEBUG("Received %d bytes from client\n", r);
+	return handle_write(sockid, buffer, r);
 }
 
 void handle_sigint(int sig)  {
@@ -176,7 +196,7 @@ void handle_sigint(int sig)  {
 } 
 
 int main() {
-	int ret, fd, nb_ev;
+	int ret, fd, nb_ev, do_accept;
   	struct epoll_event ev[BURST_SIZE];
 
 	signal(SIGINT, handle_sigint);
@@ -198,6 +218,7 @@ int main() {
 	}
 	add_to_epoll(EPOLLIN, server_sock);
 
+	do_accept = FALSE;
   	while (!force_quit) {
 		TRACE_DEBUG("Wating for futher events...\n");
 		nb_ev = epoll_wait(epoll_fd, ev, BURST_SIZE, -1);
@@ -207,7 +228,7 @@ int main() {
 			fd = ev[i].data.fd;
 			TRACE_DEBUG("Processign %d event, Got an event againt fd: %d\n", i, fd);
 			if (fd == server_sock)  {
-				accept_conn();
+				do_accept = TRUE;
 				continue;
 			}
 			
@@ -217,6 +238,12 @@ int main() {
 					close(fd);
 				}
 			}
+		}
+
+		if (do_accept) {
+			while (accept_conn())
+				;
+			do_accept = FALSE;
 		}
 	}
 
