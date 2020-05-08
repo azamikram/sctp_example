@@ -83,8 +83,8 @@ socket_failed:
 void handle_connection(int sockid, client_stats_t *stats) {
 	int r, w, ret;
 	uint8_t buffer[MAX_BUFF];
-	uint8_t *data = generate_msg(MAX_BUFF / 2);
-	size_t datalen = MAX_BUFF / 2;
+	uint8_t *data = generate_msg(MAX_BUFF);
+	size_t datalen = MAX_BUFF;
 	size_t bytes_to_send;
 #ifdef RATE
 	micro_ts_t rx_start_ts, rx_end_ts;
@@ -103,17 +103,20 @@ void handle_connection(int sockid, client_stats_t *stats) {
 			if (stats->tx == 0) tx_start_ts = micro_ts();
 #endif
 			ret = SCTP_WRITE(sockid, data + w, bytes_to_send);
-			if (ret < 0 && errno != EAGAIN) {
-				TRACE_ERROR("An error occur red while writing to server\n");
-				goto exit;
+			if (ret < 0) {
+				if (errno != EAGAIN) {
+					TRACE_ERROR("An error occur red while writing to server\n");
+					goto exit;
+				}
+				if (force_quit) goto exit;
+				continue;
 			}
 			if (force_quit) goto exit;
-			if (ret == -1) continue;
 
 			w += ret;
 			bytes_to_send -= w;
 #ifdef RATE
-			stats->tx += w;
+			stats->tx += ret;
 			tx_end_ts = micro_ts();
 #endif
 		}
@@ -125,16 +128,16 @@ void handle_connection(int sockid, client_stats_t *stats) {
 #endif
 		r = SCTP_READ(sockid, buffer, datalen);
 		if (r <= 0) {
-			if (ret == 0) {
+			if (r == 0) {
 				TRACE_ERROR("The connection closed from the server side, exiting\n");
 				goto exit;
 			} else if (errno != EAGAIN) {
 				TRACE_ERROR("An error occured while reading from server\n");
 				goto exit;
 			}
+			continue;
 		}
 #ifdef RATE
-		if (r == -1) continue;
 		stats->rx += r;
 		rx_end_ts = micro_ts();
 #endif

@@ -110,12 +110,14 @@ sock_failed:
 }
 
 int accept_conn() {
-	int ret, flags, sockid;
+	int sockid, flags, ret;
 
 	TRACE_DEBUG("Waiting to accept a new client\n");
 	sockid = accept(server_sock, NULL, NULL);
 	if (sockid == -1) {
-		TRACE_ERROR("Could not accept new connection!\n");
+		if (errno != EAGAIN) {
+			TRACE_ERROR("Could not accept new connection!\n");
+		}
 		goto return_failed;
 	}
 	TRACE_DEBUG("Accepted a new client\n");
@@ -146,17 +148,20 @@ int handle_write(int sockid, uint8_t *buffer, size_t len) {
 		if (tx == 0) tx_start_ts = micro_ts();
 #endif
 		ret = SCTP_WRITE(sockid, buffer + w, len - w);
-		if (ret < 0 && errno != EAGAIN) {
-			TRACE_ERROR("An error occur red while writing to server\n");
-			return FALSE;
+		TRACE_DEBUG("Tried to send %ld bytes, sent %d\n", len - w, ret);
+		if (ret < 0) {
+			if (errno != EAGAIN) {
+				TRACE_ERROR("An error occur red while writing to server\n");
+				return FALSE;
+			}
+			if (force_quit) return FALSE;
+			continue;
 		}
-
 		if (force_quit) return FALSE;
-		if (ret == -1) continue;
 
 		w += ret;
 #ifdef RATE
-		tx += w;
+		tx += ret;
 		tx_end_ts = micro_ts();
 #endif
 	}
@@ -179,9 +184,9 @@ int read_event(int sockid) {
 			TRACE_ERROR("An error occured while reading from server\n");
 			return FALSE;
 		}
+		return TRUE;
 	}
 #ifdef RATE
-	if (r == -1) return TRUE;
 	rx += r;
 	rx_end_ts = micro_ts();
 #endif
@@ -223,7 +228,7 @@ int main() {
 		TRACE_DEBUG("Wating for futher events...\n");
 		nb_ev = epoll_wait(epoll_fd, ev, BURST_SIZE, -1);
 		TRACE_DEBUG("Got %d events from epoll_wait\n", nb_ev);
-		
+
 		for (int i = 0; i < nb_ev; i++) {
 			fd = ev[i].data.fd;
 			TRACE_DEBUG("Processign %d event, Got an event againt fd: %d\n", i, fd);
@@ -237,6 +242,11 @@ int main() {
 					rm_from_epoll(fd);
 					close(fd);
 				}
+			}
+
+			if (ev[i].events & EPOLLERR) {
+				TRACE_INFO("Error occured on connection %d, closing the connection.\n", fd);
+				close(fd);
 			}
 		}
 
